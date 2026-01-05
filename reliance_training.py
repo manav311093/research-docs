@@ -54,6 +54,7 @@ TRAIN_DAYS = [
     
 ]
 TEST_DAYS = [
+    "2025-12-15", "2025-12-16", "2025-12-17", "2025-12-18", "2025-12-19", "2025-12-23", "2025-12-24", 
     "2025-12-29", "2025-12-30", "2025-12-31", '2026-01-01', '2026-01-02', '2026-01-05'
 ]
 TRAIN_MODEL = True
@@ -430,6 +431,15 @@ def preprocess_data(
     candles_df = add_stochastic_oscillator(candles_df, stoch_period=14, stoch_smooth=3)
     candles_df = add_vwap_indicator(candles_df)
     candles_df = add_obv_indicator(candles_df)
+
+    candles_df = candles_df.with_columns(
+        obi_diff=pl.col("obi_ma_3") - pl.col("obi_ma_15"),
+        obi_diff_abs=(pl.col("obi_ma_3") - pl.col("obi_ma_15")).abs(),
+        obi_diff_slope=((pl.col("obi_ma_3") - pl.col("obi_ma_15")) - (pl.col("obi_ma_3").shift(1) - pl.col("obi_ma_15").shift(1))),
+        volatility_ratio=pl.col("volatility_std_over_3m") / (pl.col("volatility_std_over_15m") + 1e-9),
+        macd_minus_signal=pl.col("macd") - pl.col("signal"),
+        rsi_distance_from_50=(pl.col("rsi") - 50).abs()
+    )
 
     return candles_df
 
@@ -845,6 +855,8 @@ if __name__ == "__main__":
         feature_columns = ['volatility_std_over_15m', 'volatility_std_over_3m', 'volatility_mean_over_15m',
                            'volatility_mean_over_3m', 'obi_ma_1', 'obi_ma_3', 'obi_ma_5', 'obi_ma_15',
                            'rsi', 'macd', 'signal', 'bb_upper', 'bb_lower', 'bb_middle',
+                           'obi_diff', 'obi_diff_abs', 'obi_diff_slope', 'volatility_ratio',
+                            'macd_minus_signal', 'rsi_distance_from_50',    
                            'atr_14', 'adx_14', 'stoch_k', 'stoch_d', 'vwap', 'obv', 'trade_signal']
         target_column_name = ["tradeable"]
 
@@ -878,18 +890,19 @@ if __name__ == "__main__":
             print("Training data is empty. Cannot train model.")
             all_trade_df.with_columns(dt_predicted_signal=pl.lit(None, dtype=pl.Int8))
         else:
-            model = XGBClassifier(**{'learning_rate': 0.03,
+            model = XGBClassifier(**{'learning_rate': 0.01,
                                      'max_depth': 4,
                                      'n_estimators': 3000,
-                                     'subsample': 0.8,
-                                     'colsample_bytree': 0.8,
+                                     'subsample': 0.7,
+                                     'colsample_bytree': 0.7,
                                      'objective': 'binary:logistic',
                                      'eval_metric': 'logloss',
-                                     'min_child_weight': 10,
-                                     'gamma': 1.0,
+                                     'min_child_weight': 20,
+                                     'gamma': 3.0,
                                      'reg_alpha': 0.5,
-                                     'reg_lambda': 5.0,
-                                     'scale_pos_weight': spw})
+                                     'reg_lambda': 7.0,
+                                     'scale_pos_weight': spw
+                                     })
             # try:
             #     model.load_model("rel_xgbmodel.json")
             # except:
@@ -938,6 +951,8 @@ if __name__ == "__main__":
         feature_columns = ['volatility_std_over_15m', 'volatility_std_over_3m', 'volatility_mean_over_15m',
                            'volatility_mean_over_3m', 'obi_ma_1', 'obi_ma_3', 'obi_ma_5', 'obi_ma_15',
                            'rsi', 'macd', 'signal', 'bb_upper', 'bb_lower', 'bb_middle',
+                           'obi_diff', 'obi_diff_abs', 'obi_diff_slope', 'volatility_ratio',
+                           'macd_minus_signal', 'rsi_distance_from_50',    
                            'atr_14', 'adx_14', 'stoch_k', 'stoch_d', 'vwap', 'obv', 'trade_signal']
         predict_proba = model.predict_proba(output_df.select(feature_columns).to_pandas())[:, 1]
         all_predictions_on_model_subset = (predict_proba > PROBABILITY_THRESHOLD).astype(int)
