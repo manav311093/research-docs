@@ -54,12 +54,13 @@ TRAIN_DAYS = [
     
 ]
 TEST_DAYS = [
-    "2025-12-29", "2025-12-30", #"2025-12-31" 
+    "2025-12-29", "2025-12-30", "2025-12-31", '2026-01-01', '2026-01-02', '2026-01-05'
 ]
 TRAIN_MODEL = True
-SHOW_PLOT = True
+SHOW_PLOT = not True
 SHOW_HISTORY = not True
 
+PROBABILITY_THRESHOLD = 0.52
 TOKEN = 738561
 PP = 0.0028
 VOL_LOW = 0.0002
@@ -854,7 +855,13 @@ if __name__ == "__main__":
         all_trade_test_df = all_trade_df[int(train_split_ratio * all_df_samples):]
         #import ipdb; ipdb.set_trace()
 
-        all_trade_train_df = balance_df(all_trade_train_df, label_col="tradeable")
+        # replace with scale_pos_weight in xgboost
+        #all_trade_train_df = balance_df(all_trade_train_df, label_col="tradeable")
+        pos_count = all_trade_train_df.filter(pl.col("tradeable") == 1).height
+        neg_count = all_trade_train_df.filter(pl.col("tradeable") == 0).height
+        spw = 1.0
+        if pos_count > 0:
+            spw = neg_count / pos_count
 
         X = all_trade_train_df.select(feature_columns)
         y = all_trade_train_df.select(target_column_name)
@@ -872,24 +879,27 @@ if __name__ == "__main__":
             all_trade_df.with_columns(dt_predicted_signal=pl.lit(None, dtype=pl.Int8))
         else:
             model = XGBClassifier(**{'learning_rate': 0.03,
-                                     'max_depth': 3,
+                                     'max_depth': 4,
                                      'n_estimators': 3000,
-                                     'subsample': 0.7,
-                                     'colsample_bytree': 0.7,
+                                     'subsample': 0.8,
+                                     'colsample_bytree': 0.8,
                                      'objective': 'binary:logistic',
                                      'eval_metric': 'logloss',
                                      'min_child_weight': 10,
                                      'gamma': 1.0,
                                      'reg_alpha': 0.5,
-                                     'reg_lambda': 5.0})
+                                     'reg_lambda': 5.0,
+                                     'scale_pos_weight': spw})
             # try:
             #     model.load_model("rel_xgbmodel.json")
             # except:
             #     pass
-            model.fit(X_train_pd, y_train_pd)
+            model.fit(X_train_pd, y_train_pd, eval_set=[(X_test_pd, y_test_pd)],
+                       early_stopping_rounds=50, verbose=False)
             model.save_model('rel_xgbmodel.json')
             # Predict and evaluate the model
-            y_pred = model.predict(X_test_pd)
+            y_pred_proba = model.predict_proba(X_test_pd)[:, 1]
+            y_pred = (y_pred_proba > PROBABILITY_THRESHOLD).astype(int)
             accuracy = accuracy_score(y_test_pd, y_pred)
             print(f'Test Data Accuracy: {accuracy}')
             #import ipdb; ipdb.set_trace()
@@ -897,7 +907,8 @@ if __name__ == "__main__":
             # --- Evaluate on Test Set (if test set is not empty) ---
             if not X_test_pd.empty:
                 print("\nModel Evaluation on Test Set:")
-                y_pred_test = model.predict(X_test_pd)
+                y_pred_test_proba = model.predict_proba(X_test_pd)[:, 1]
+                y_pred_test = (y_pred_test_proba > PROBABILITY_THRESHOLD).astype(int)
                 print(classification_report(y_test_pd, y_pred_test, zero_division=0))
                 print("Confusion Matrix (Test Set):")
                 print(confusion_matrix(y_test_pd, y_pred_test, labels=[1, 0])) # Specify labels for order
@@ -928,7 +939,8 @@ if __name__ == "__main__":
                            'volatility_mean_over_3m', 'obi_ma_1', 'obi_ma_3', 'obi_ma_5', 'obi_ma_15',
                            'rsi', 'macd', 'signal', 'bb_upper', 'bb_lower', 'bb_middle',
                            'atr_14', 'adx_14', 'stoch_k', 'stoch_d', 'vwap', 'obv', 'trade_signal']
-        all_predictions_on_model_subset = model.predict(output_df.select(feature_columns).to_pandas())
+        predict_proba = model.predict_proba(output_df.select(feature_columns).to_pandas())[:, 1]
+        all_predictions_on_model_subset = (predict_proba > PROBABILITY_THRESHOLD).astype(int)
         output_df = output_df.with_columns(
             tradeable=pl.Series(values=all_predictions_on_model_subset, dtype=pl.Int8)
         )
