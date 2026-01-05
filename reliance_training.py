@@ -382,7 +382,7 @@ def preprocess_data(
             (pl.col("last_price").max() - pl.col("last_price").min()) / open_price
         ),
         price_log_return=(
-            (pl.col("last_price").last() / pl.col("last_price").first()).log() / open_price
+            (pl.col("last_price").last() / pl.col("last_price").first()).log()
         ),
         obi=(pl.col("buy_quantity").cast(pl.Float64).mean() /
               (pl.col("sell_quantity").cast(pl.Float64).mean() + 1e-9) # epsilon to avoid div by zero
@@ -462,14 +462,13 @@ def generate_signals(sdf: pl.DataFrame, config_dict: dict) -> pl.DataFrame:
         #& (df['volatility_mean_1m_interval_over_3m'] < df['volatility_mean'])
     )
 
-    long_entry_trigger = obi_long_entry
-    short_entry_trigger = obi_short_entry
+    long_entry_trigger = obi_long_entry.fill_null(False)
+    short_entry_trigger = obi_short_entry.fill_null(False)
 
     df = df.with_columns(
-        buy_signal=long_entry_trigger.fill_null(False),
-        sell_signal=short_entry_trigger.fill_null(False),
-        buy_signal_obi=obi_long_entry.fill_null(False),
-        sell_signal_obi=obi_short_entry.fill_null(False),
+        buy_signal=long_entry_trigger,
+        sell_signal=short_entry_trigger,
+        trade_signal=pl.when(long_entry_trigger).then(1).when(short_entry_trigger).then(-1).otherwise(0),
     )
     return df
 
@@ -842,49 +841,51 @@ if __name__ == "__main__":
             else:
                 all_trade_df = pl.concat([all_trade_df, output_df])
 
-        all_trade_df = balance_df(all_trade_df, "tradeable")
-
         feature_columns = ['volatility_std_over_15m', 'volatility_std_over_3m', 'volatility_mean_over_15m',
-                        'volatility_mean_over_3m', 'volatility_mean', 'obi_ma_1', 'obi_ma_3', 'obi_ma_5', 'obi_ma_15',
-                        'rsi', 'macd', 'signal', 'bb_upper', 'bb_lower', 'bb_middle',
-                        'atr_14', 'adx_14', 'stoch_k', 'stoch_d', 'vwap', 'obv',
-                        'buy_signal', 'sell_signal']
+                           'volatility_mean_over_3m', 'obi_ma_1', 'obi_ma_3', 'obi_ma_5', 'obi_ma_15',
+                           'rsi', 'macd', 'signal', 'bb_upper', 'bb_lower', 'bb_middle',
+                           'atr_14', 'adx_14', 'stoch_k', 'stoch_d', 'vwap', 'obv', 'trade_signal']
         target_column_name = ["tradeable"]
 
         # traing model & eval accuracy
-        train_split_ratio = 0.95
-        X = all_trade_df.select(feature_columns)
-        y = all_trade_df.select(target_column_name)
+        train_split_ratio = 0.8
+        all_df_samples = len(all_trade_df)
+        all_trade_train_df = all_trade_df[:int(train_split_ratio * all_df_samples)]
+        all_trade_test_df = all_trade_df[int(train_split_ratio * all_df_samples):]
+        #import ipdb; ipdb.set_trace()
+
+        all_trade_train_df = balance_df(all_trade_train_df, label_col="tradeable")
+
+        X = all_trade_train_df.select(feature_columns)
+        y = all_trade_train_df.select(target_column_name)
 
         # Convert to Pandas for scikit-learn
-        X_pd = X.to_pandas()
-        y_pd = y.to_pandas().squeeze() # .squeeze() to convert DataFrame column to Series
-        #y_pd = y_pd + 1
+        X_train_pd = X.to_pandas()
+        y_train_pd = y.to_pandas().squeeze() # .squeeze() to convert DataFrame column to Serie
 
-        n_total_samples = len(X_pd)
-        split_index = int(n_total_samples * train_split_ratio)
-
-        if split_index < 1 or (n_total_samples - split_index) < 1:
-            print("Not enough data for a meaningful train/test split. Using all data for training (not recommended for evaluation).")
-            X_train_pd, y_train_pd = X_pd, y_pd
-            X_test_pd, y_test_pd = X_pd.iloc[0:0], y_pd.iloc[0:0] # Empty test set
-        else:
-            X_train_pd, X_test_pd = X_pd[:split_index], X_pd[split_index:]
-            y_train_pd, y_test_pd = y_pd[:split_index], y_pd[split_index:]
+        X_test_pd = all_trade_test_df.select(feature_columns).to_pandas()
+        y_test_pd = all_trade_test_df.select(target_column_name).to_pandas().squeeze()
 
         print(f"Training data shape: {X_train_pd.shape}, Test data shape: {X_test_pd.shape}")
         if X_train_pd.empty:
             print("Training data is empty. Cannot train model.")
             all_trade_df.with_columns(dt_predicted_signal=pl.lit(None, dtype=pl.Int8))
         else:
-            # {'learning_rate': 0.1, 'max_depth': 20, 'n_estimators': 390, 'subsample': 1}
-            # {'learning_rate': 0.05, 'max_depth': 10, 'n_estimators': 450, 'subsample': 0.8}
-            # {'learning_rate': 0.01, 'max_depth': 10, 'n_estimators': 500, 'subsample': 0.8}
-            model = XGBClassifier(**{'learning_rate': 0.01, 'max_depth': 10, 'n_estimators': 300, 'subsample': 1})
-            try:
-                model.load_model("rel_xgbmodel.json")
-            except:
-                pass
+            model = XGBClassifier(**{'learning_rate': 0.03,
+                                     'max_depth': 3,
+                                     'n_estimators': 3000,
+                                     'subsample': 0.7,
+                                     'colsample_bytree': 0.7,
+                                     'objective': 'binary:logistic',
+                                     'eval_metric': 'logloss',
+                                     'min_child_weight': 10,
+                                     'gamma': 1.0,
+                                     'reg_alpha': 0.5,
+                                     'reg_lambda': 5.0})
+            # try:
+            #     model.load_model("rel_xgbmodel.json")
+            # except:
+            #     pass
             model.fit(X_train_pd, y_train_pd)
             model.save_model('rel_xgbmodel.json')
             # Predict and evaluate the model
@@ -903,13 +904,6 @@ if __name__ == "__main__":
             else:
                 print("\nTest set is empty. No evaluation metrics to display.")
 
-            all_predictions_on_model_subset = model.predict(X_pd)
-            accuracy = accuracy_score(y_pd, all_predictions_on_model_subset)
-            print(f'Full Data Accuracy: {accuracy}')
-
-            all_trade_df_with_preds = all_trade_df.with_columns(
-                tradeable_predicted=pl.Series(values=all_predictions_on_model_subset, dtype=pl.Int8)
-            )
     # --- Testing/Evaluation Phase ---
     day_wise_pnl = []
     all_day_pnl = 0.0
@@ -931,10 +925,9 @@ if __name__ == "__main__":
             continue
         output_df = generate_signals(final_df, config)
         feature_columns = ['volatility_std_over_15m', 'volatility_std_over_3m', 'volatility_mean_over_15m',
-                           'volatility_mean_over_3m', 'volatility_mean', 'obi_ma_1', 'obi_ma_3', 'obi_ma_5', 'obi_ma_15',
+                           'volatility_mean_over_3m', 'obi_ma_1', 'obi_ma_3', 'obi_ma_5', 'obi_ma_15',
                            'rsi', 'macd', 'signal', 'bb_upper', 'bb_lower', 'bb_middle',
-                           'atr_14', 'adx_14', 'stoch_k', 'stoch_d', 'vwap', 'obv',
-                           'buy_signal', 'sell_signal']
+                           'atr_14', 'adx_14', 'stoch_k', 'stoch_d', 'vwap', 'obv', 'trade_signal']
         all_predictions_on_model_subset = model.predict(output_df.select(feature_columns).to_pandas())
         output_df = output_df.with_columns(
             tradeable=pl.Series(values=all_predictions_on_model_subset, dtype=pl.Int8)
