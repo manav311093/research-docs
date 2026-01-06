@@ -768,10 +768,13 @@ def evaluate_pnl_with_trailing_stop(
     df_sorted = df_with_signals.sort("timestamp")
     last_available_price_for_eod_sq_off = df_sorted[-1]['price_close_real'][0] if not df_sorted.is_empty() else 0
     last_available_timestamp_for_eod_sq_off = df_sorted[-1]['timestamp'] if not df_sorted.is_empty() else None
-
+    # eval tradable price, as mid of open and close of next candle
+    df_sorted = df_sorted.with_columns(
+        to_trade_price=(pl.col("price_open_real").shift(-1) + pl.col("price_close_real").shift(-1)) / 2
+    )
     for tick in df_sorted.iter_rows(named=True):
         current_timestamp = tick['timestamp']
-        current_price = tick['price_close_real']
+        current_price = tick['to_trade_price'] if tick['to_trade_price'] is not None else last_available_price_for_eod_sq_off
         current_time = current_timestamp.time()
 
         is_buy_entry_signal = tick.get('buy_signal', False)
@@ -941,8 +944,8 @@ if __name__ == "__main__":
             # 4. Generate Signals
             output_df = generate_signals(final_df, config)
             output_df = generate_good_trade_label(output_df,
-                                                CONFIG['profit_target_pct'],
-                                                CONFIG['initial_stop_loss_pct'], "tradeable")
+                                                  CONFIG['profit_target_pct'],
+                                                  CONFIG['initial_stop_loss_pct'], "tradeable")
             # filter buy/sell entries
             output_df = output_df.filter((pl.col("buy_signal").is_not_null() & pl.col('buy_signal')) |
                                         (pl.col("sell_signal").is_not_null() & pl.col('sell_signal')))
