@@ -13,6 +13,7 @@ import math
 import os
 
 from sklearn.model_selection import train_test_split # For general splitting, but we'll do chronological
+from sklearn.metrics import precision_recall_curve
 from joblib import dump, load
 
 from xgboost import XGBClassifier
@@ -55,13 +56,14 @@ TRAIN_DAYS = [
 ]
 TEST_DAYS = [
     "2025-12-15", "2025-12-16", "2025-12-17", "2025-12-18", "2025-12-19", "2025-12-23", "2025-12-24", 
-    "2025-12-29", "2025-12-30", "2025-12-31", '2026-01-01', '2026-01-02', '2026-01-05'
+    "2025-12-29", "2025-12-30", "2025-12-31",
+    '2026-01-01', '2026-01-02', '2026-01-05'
 ]
 TRAIN_MODEL = True
 SHOW_PLOT = not True
 SHOW_HISTORY = not True
 
-PROBABILITY_THRESHOLD = 0.52
+PROBABILITY_THRESHOLD = 0.55
 TOKEN = 738561
 PP = 0.0028
 VOL_LOW = 0.0002
@@ -259,47 +261,77 @@ def add_atr_indicator(df: pl.DataFrame, atr_period: int = 14) -> pl.DataFrame:
     ]).drop(["prev_close", "true_range"])
 
 def add_adx_indicator(df: pl.DataFrame, adx_period: int = 14) -> pl.DataFrame:
-    # 1. Calculate TR and Directional Movement (DM)
+    eps = 1e-9
+
     df = df.with_columns([
         (pl.col("price_high") - pl.col("price_high").shift(1)).alias("up_move"),
         (pl.col("price_low").shift(1) - pl.col("price_low")).alias("down_move"),
-        pl.col("price_close").shift(1).alias("prev_close")
-    ]).with_columns([
-        pl.max_horizontal([
-            (pl.col("price_high") - pl.col("price_low")),
-            (pl.col("price_high") - pl.col("prev_close")).abs(),
-            (pl.col("price_low") - pl.col("prev_close")).abs()
-        ]).alias("tr")
+        pl.col("price_close").shift(1).alias("prev_close"),
     ])
 
+    # True Range (FIXED max_horizontal)
+    df = df.with_columns(
+        pl.max_horizontal(
+            pl.col("price_high") - pl.col("price_low"),
+            (pl.col("price_high") - pl.col("prev_close")).abs(),
+            (pl.col("price_low") - pl.col("prev_close")).abs(),
+        ).alias("tr")
+    )
+
+    # Directional Movement
     df = df.with_columns([
         pl.when((pl.col("up_move") > pl.col("down_move")) & (pl.col("up_move") > 0))
-        .then(pl.col("up_move")).otherwise(0).alias("plus_dm"),
+        .then(pl.col("up_move")).otherwise(0.0).alias("plus_dm"),
+
         pl.when((pl.col("down_move") > pl.col("up_move")) & (pl.col("down_move") > 0))
-        .then(pl.col("down_move")).otherwise(0).alias("minus_dm")
+        .then(pl.col("down_move")).otherwise(0.0).alias("minus_dm"),
     ])
 
-    # 2. Smooth TR and DM using Wilder's (EWM with alpha=1/period)
+    # Wilder smoothing (ensure min_periods)
     df = df.with_columns([
-        pl.col("tr").ewm_mean(alpha=1/adx_period, adjust=False).alias("tr_smooth"),
-        pl.col("plus_dm").ewm_mean(alpha=1/adx_period, adjust=False).alias("plus_dm_smooth"),
-        pl.col("minus_dm").ewm_mean(alpha=1/adx_period, adjust=False).alias("minus_dm_smooth"),
+        pl.col("tr")
+        .ewm_mean(alpha=1/adx_period, adjust=False, min_samples=adx_period)
+        .alias("tr_smooth"),
+
+        pl.col("plus_dm")
+        .ewm_mean(alpha=1/adx_period, adjust=False, min_samples=adx_period)
+        .alias("plus_dm_smooth"),
+
+        pl.col("minus_dm")
+        .ewm_mean(alpha=1/adx_period, adjust=False, min_samples=adx_period)
+        .alias("minus_dm_smooth"),
     ])
 
-    # 3. Calculate +DI, -DI, and DX
+    # DI calculations (guard division)
     df = df.with_columns([
-        (100 * pl.col("plus_dm_smooth") / pl.col("tr_smooth")).alias("plus_di"),
-        (100 * pl.col("minus_dm_smooth") / pl.col("tr_smooth")).alias("minus_di"),
-    ]).with_columns([
-        (100 * (pl.col("plus_di") - pl.col("minus_di")).abs() / 
-         (pl.col("plus_di") + pl.col("minus_di"))).alias("dx")
+        (100 * pl.col("plus_dm_smooth") / (pl.col("tr_smooth") + eps)).alias("plus_di"),
+        (100 * pl.col("minus_dm_smooth") / (pl.col("tr_smooth") + eps)).alias("minus_di"),
     ])
 
-    # 4. Final ADX
-    return df.with_columns([
-        pl.col("dx").ewm_mean(alpha=1/adx_period, adjust=False).alias(f"adx_{adx_period}")
-    ]).drop(["up_move", "down_move", "prev_close", "tr", "plus_dm", "minus_dm", 
-             "tr_smooth", "plus_dm_smooth", "minus_dm_smooth", "plus_di", "minus_di", "dx"])
+    # DX (guard 0/0)
+    df = df.with_columns(
+        pl.when((pl.col("plus_di") + pl.col("minus_di")) > 0)
+        .then(
+            100 * (pl.col("plus_di") - pl.col("minus_di")).abs()
+            / (pl.col("plus_di") + pl.col("minus_di"))
+        )
+        .otherwise(None)
+        .alias("dx")
+    )
+
+    # Final ADX
+    df = df.with_columns(
+        pl.col("dx")
+        .ewm_mean(alpha=1/adx_period, adjust=False, min_samples=adx_period)
+        .alias(f"adx_{adx_period}")
+    )
+
+    return df.drop([
+        "up_move", "down_move", "prev_close",
+        "tr", "plus_dm", "minus_dm",
+        "tr_smooth", "plus_dm_smooth", "minus_dm_smooth",
+        "plus_di", "minus_di", "dx",
+    ])
 
 def add_stochastic_oscillator(df: pl.DataFrame, stoch_period: int = 14, stoch_smooth: int = 3) -> pl.DataFrame:
     # %K = (Current Close - Lowest Low) / (Highest High - Lowest Low) * 100
@@ -433,12 +465,78 @@ def preprocess_data(
     candles_df = add_obv_indicator(candles_df)
 
     candles_df = candles_df.with_columns(
-        obi_diff=pl.col("obi_ma_3") - pl.col("obi_ma_15"),
-        obi_diff_abs=(pl.col("obi_ma_3") - pl.col("obi_ma_15")).abs(),
-        obi_diff_slope=((pl.col("obi_ma_3") - pl.col("obi_ma_15")) - (pl.col("obi_ma_3").shift(1) - pl.col("obi_ma_15").shift(1))),
+        obi_diff_315=pl.col("obi_ma_3") - pl.col("obi_ma_15"),
+        obi_diff_315_abs=(pl.col("obi_ma_3") - pl.col("obi_ma_15")).abs(),
+        obi_diff_315_slope=((pl.col("obi_ma_3") - pl.col("obi_ma_15")) - (pl.col("obi_ma_3").shift(1) - pl.col("obi_ma_15").shift(1))),
+        obi_diff_35=pl.col("obi_ma_3") - pl.col("obi_ma_5"),
+        obi_diff_35_abs=(pl.col("obi_ma_3") - pl.col("obi_ma_5")).abs(),
+        obi_diff_35_slope=((pl.col("obi_ma_3") - pl.col("obi_ma_5")) - (pl.col("obi_ma_3").shift(1) - pl.col("obi_ma_5").shift(1))),
         volatility_ratio=pl.col("volatility_std_over_3m") / (pl.col("volatility_std_over_15m") + 1e-9),
         macd_minus_signal=pl.col("macd") - pl.col("signal"),
-        rsi_distance_from_50=(pl.col("rsi") - 50).abs()
+        rsi_distance_from_50=(pl.col("rsi") - 50).abs(),
+        vwap_distance=(pl.col("price_close") - pl.col("vwap")) / pl.col("vwap"),
+        volume_surge=pl.col("volume") / (pl.col("volume").rolling_mean(window_size=15, min_samples=1) + 1e-9)
+    )
+    # obi related features
+    candles_df = candles_df.with_columns(
+        obi_acceleration_3_15=pl.col("obi_diff_315_slope") - pl.col("obi_diff_315_slope").shift(1),
+        obi_acceleration_3_5=pl.col("obi_diff_35_slope") - pl.col("obi_diff_35_slope").shift(1),
+        obi_dir_3_15=pl.col("obi_diff_315").sign(),
+        obi_dir_3_5=pl.col("obi_diff_35").sign(),
+    )
+    candles_df = candles_df.with_columns(
+        obi_dir_rle_3_15=pl.col("obi_dir_3_15").rle_id(),
+        obi_dir_rle_3_5=pl.col("obi_dir_3_5").rle_id()
+    )
+    # price candle related features
+    candles_df = candles_df.with_columns(
+        candle_body_ratio=pl.col("price_return") / pl.col("price_volatility"),
+        upper_wick_ratio=(pl.col("price_high") - pl.max_horizontal("price_close", "price_open")) / (pl.col("price_volatility") + 1e-9),
+        lower_wick_ratio=(pl.min_horizontal("price_close", "price_open") - pl.col("price_low")) / (pl.col("price_volatility") + 1e-9),
+        bullish_candle=(pl.col("price_close") > pl.col("price_open")).cast(pl.Int8),
+        bearish_candle=(pl.col("price_close") < pl.col("price_open")).cast(pl.Int8),
+    )
+    candles_df = candles_df.with_columns(
+        bullish_candle_count_5=pl.col("bullish_candle").rolling_sum(window_size=5),
+        bearish_candle_count_5=pl.col("bearish_candle").rolling_sum(window_size=5),
+        bullish_candle_count_15=pl.col("bullish_candle").rolling_sum(window_size=15),
+        bearish_candle_count_15=pl.col("bearish_candle").rolling_sum(window_size=15),
+        uptrend_5=(pl.col("price_close").rolling_mean(window_size=5) > pl.col("price_close").rolling_mean(window_size=15)).cast(pl.Int8),
+        uptrend_15=(pl.col("price_close").rolling_mean(window_size=15) > pl.col("price_close").rolling_mean(window_size=50)).cast(pl.Int8), 
+    )
+
+    # volatility features
+    candles_df = candles_df.with_columns(
+        volatility_percentile=pl.col("price_volatility").rank(method="average") / pl.col("price_volatility").len(),
+        volatility_expanding=(pl.col("volatility_std_over_3m") > pl.col('volatility_std_over_15m')).cast(pl.Int8),
+        atr_percentile=pl.col("atr_14").rank(method="average") / pl.col("atr_14").len(),
+        bb_position=(pl.col("price_close") - pl.col("bb_middle")) / (pl.col("bb_upper") - pl.col("bb_lower") + 1e-9),
+    )
+
+    # time based features
+    candles_df = candles_df.with_columns(
+        minutes_since_midnight=(pl.col("timestamp").dt.hour() * 60 + pl.col("timestamp").dt.minute()).cast(pl.Int32),
+        minutes_since_open=(pl.col("timestamp").dt.hour() * 60 + pl.col("timestamp").dt.minute() - 9*60 - 15).cast(pl.Int32),
+        minutes_until_close=(15*60 + 20 - (pl.col("timestamp").dt.hour() * 60 + pl.col("timestamp").dt.minute())).cast(pl.Int32),
+    )
+    candles_df = candles_df.with_columns(
+        session_segment=pl.when(pl.col("minutes_since_open") < 30).then(1).when(pl.col("minutes_until_close") < 30).then(3).otherwise(2).cast(pl.Int8)
+    )
+
+    # interaction features
+    candles_df = candles_df.with_columns(
+        obi_trend_strength_315=pl.col("obi_diff_315_abs") * pl.col("adx_14") / 100,
+        obi_volume_interaction_315=pl.col("obi_diff_315") * pl.col("volume_surge"),
+        obi_rsi_interaction_315=pl.col("rsi_distance_from_50") * pl.col("obi_diff_315") / 50,
+        obi_volatility_interaction_315=pl.col("obi_diff_315") / (pl.col("volatility_std_over_3m") + 1e-9),
+        obi_macd_interaction_315=pl.col("obi_diff_315") * pl.col("macd_minus_signal"),
+        obi_bb_interaction_315=pl.col("obi_diff_315") * pl.col("bb_position"),
+        obi_trend_strength_35=pl.col("obi_diff_35_abs") * pl.col("adx_14") / 100,
+        obi_volume_interaction_35=pl.col("obi_diff_35") * pl.col("volume_surge"),
+        obi_rsi_interaction_35=pl.col("rsi_distance_from_50") * pl.col("obi_diff_35") / 50,
+        obi_volatility_interaction_35=pl.col("obi_diff_35") / (pl.col("volatility_std_over_3m") + 1e-9),
+        obi_macd_interaction_35=pl.col("obi_diff_35") * pl.col("macd_minus_signal"),
+        obi_bb_interaction_35=pl.col("obi_diff_35") * pl.col("bb_position"),
     )
 
     return candles_df
@@ -821,6 +919,8 @@ if __name__ == "__main__":
     config = CONFIG
     output_df = None
     all_trade_df = None
+    optimal_threshold = 0.5
+    max_pr_score = 0.0
 
     if TRAIN_MODEL:
         for day in TRAIN_DAYS:
@@ -853,11 +953,23 @@ if __name__ == "__main__":
                 all_trade_df = pl.concat([all_trade_df, output_df])
 
         feature_columns = ['volatility_std_over_15m', 'volatility_std_over_3m', 'volatility_mean_over_15m',
-                           'volatility_mean_over_3m', 'obi_ma_1', 'obi_ma_3', 'obi_ma_5', 'obi_ma_15',
-                           'rsi', 'macd', 'signal', 'bb_upper', 'bb_lower', 'bb_middle',
-                           'obi_diff', 'obi_diff_abs', 'obi_diff_slope', 'volatility_ratio',
-                            'macd_minus_signal', 'rsi_distance_from_50',    
-                           'atr_14', 'adx_14', 'stoch_k', 'stoch_d', 'vwap', 'obv', 'trade_signal']
+                           'volatility_mean_over_3m',
+                            'volatility_ratio',
+                            'macd_minus_signal', 'rsi_distance_from_50',
+                            'vwap_distance', 'volume_surge',  
+                            'obv', 'trade_signal',
+                            'obi_acceleration_3_15', 'obi_acceleration_3_5',
+                            'obi_dir_rle_3_15', 'obi_dir_rle_3_5',
+                            'candle_body_ratio', 'upper_wick_ratio', 'lower_wick_ratio',
+                            'bullish_candle_count_5', 'bearish_candle_count_5',
+                            'bullish_candle_count_15', 'bearish_candle_count_15',
+                            'uptrend_5', 'uptrend_15',
+                            'volatility_percentile', 'volatility_expanding',
+                            'atr_percentile', 'bb_position',
+                            'minutes_since_midnight', 'minutes_since_open', 'minutes_until_close',
+                            'session_segment', 'obi_diff_315', 'obi_diff_315_abs', 'obi_diff_315_slope',
+                            'obi_diff_35', 'obi_diff_35_abs', 'obi_diff_35_slope'
+                           ]
         target_column_name = ["tradeable"]
 
         # traing model & eval accuracy
@@ -890,16 +1002,16 @@ if __name__ == "__main__":
             print("Training data is empty. Cannot train model.")
             all_trade_df.with_columns(dt_predicted_signal=pl.lit(None, dtype=pl.Int8))
         else:
-            model = XGBClassifier(**{'learning_rate': 0.01,
+            model = XGBClassifier(**{'learning_rate': 0.03,
                                      'max_depth': 4,
-                                     'n_estimators': 3000,
+                                     'n_estimators': 5000,
                                      'subsample': 0.7,
                                      'colsample_bytree': 0.7,
                                      'objective': 'binary:logistic',
-                                     'eval_metric': 'logloss',
-                                     'min_child_weight': 20,
+                                     'eval_metric': ['logloss'],
+                                     'min_child_weight': 30,
                                      'gamma': 3.0,
-                                     'reg_alpha': 0.5,
+                                     'reg_alpha':0.5,
                                      'reg_lambda': 7.0,
                                      'scale_pos_weight': spw
                                      })
@@ -908,11 +1020,24 @@ if __name__ == "__main__":
             # except:
             #     pass
             model.fit(X_train_pd, y_train_pd, eval_set=[(X_test_pd, y_test_pd)],
-                       early_stopping_rounds=50, verbose=False)
+                       early_stopping_rounds=100, verbose=False)
             model.save_model('rel_xgbmodel.json')
+            feature_importances = model.feature_importances_
+            feature_importance_dict = dict(zip(feature_columns, feature_importances))
+            sorted_features = sorted(feature_importance_dict.items(), key=lambda x: x[1], reverse=True)
+            print("\nFeature Importances:")
+            for feature, importance in sorted_features:
+                print(f"{feature}: {importance}")
             # Predict and evaluate the model
             y_pred_proba = model.predict_proba(X_test_pd)[:, 1]
-            y_pred = (y_pred_proba > PROBABILITY_THRESHOLD).astype(int)
+            precisions, recalls, thresholds = precision_recall_curve(y_test_pd, y_pred_proba)
+            min_recall = 0.2
+            valid = recalls[:-1] >= min_recall
+            best_idx = np.argmax(precisions[:-1][valid])
+            optimal_threshold = thresholds[valid][best_idx]
+            print(f'Optimal Probability Threshold based on Precision-Recall Curve: {optimal_threshold}')
+
+            y_pred = (y_pred_proba > optimal_threshold).astype(int)
             accuracy = accuracy_score(y_test_pd, y_pred)
             print(f'Test Data Accuracy: {accuracy}')
             #import ipdb; ipdb.set_trace()
@@ -921,10 +1046,10 @@ if __name__ == "__main__":
             if not X_test_pd.empty:
                 print("\nModel Evaluation on Test Set:")
                 y_pred_test_proba = model.predict_proba(X_test_pd)[:, 1]
-                y_pred_test = (y_pred_test_proba > PROBABILITY_THRESHOLD).astype(int)
+                y_pred_test = (y_pred_test_proba > optimal_threshold).astype(int)
                 print(classification_report(y_test_pd, y_pred_test, zero_division=0))
                 print("Confusion Matrix (Test Set):")
-                print(confusion_matrix(y_test_pd, y_pred_test, labels=[1, 0])) # Specify labels for order
+                print(confusion_matrix(y_test_pd, y_pred_test, labels=[0, 1])) # Specify labels for order
             else:
                 print("\nTest set is empty. No evaluation metrics to display.")
 
@@ -948,14 +1073,26 @@ if __name__ == "__main__":
             print("DataFrame is empty after join_asof and drop_nulls. Check data alignment or window sizes.")
             continue
         output_df = generate_signals(final_df, config)
-        feature_columns = ['volatility_std_over_15m', 'volatility_std_over_3m', 'volatility_mean_over_15m',
-                           'volatility_mean_over_3m', 'obi_ma_1', 'obi_ma_3', 'obi_ma_5', 'obi_ma_15',
-                           'rsi', 'macd', 'signal', 'bb_upper', 'bb_lower', 'bb_middle',
-                           'obi_diff', 'obi_diff_abs', 'obi_diff_slope', 'volatility_ratio',
-                           'macd_minus_signal', 'rsi_distance_from_50',    
-                           'atr_14', 'adx_14', 'stoch_k', 'stoch_d', 'vwap', 'obv', 'trade_signal']
+        feature_columns =['volatility_std_over_15m', 'volatility_std_over_3m', 'volatility_mean_over_15m',
+                           'volatility_mean_over_3m',
+                            'volatility_ratio',
+                            'macd_minus_signal', 'rsi_distance_from_50',
+                            'vwap_distance', 'volume_surge',  
+                            'obv', 'trade_signal',
+                            'obi_acceleration_3_15', 'obi_acceleration_3_5',
+                            'obi_dir_rle_3_15', 'obi_dir_rle_3_5',
+                            'candle_body_ratio', 'upper_wick_ratio', 'lower_wick_ratio',
+                            'bullish_candle_count_5', 'bearish_candle_count_5',
+                            'bullish_candle_count_15', 'bearish_candle_count_15',
+                            'uptrend_5', 'uptrend_15',
+                            'volatility_percentile', 'volatility_expanding',
+                            'atr_percentile', 'bb_position',
+                            'minutes_since_midnight', 'minutes_since_open', 'minutes_until_close',
+                            'session_segment', 'obi_diff_315', 'obi_diff_315_abs', 'obi_diff_315_slope',
+                            'obi_diff_35', 'obi_diff_35_abs', 'obi_diff_35_slope'
+                           ]
         predict_proba = model.predict_proba(output_df.select(feature_columns).to_pandas())[:, 1]
-        all_predictions_on_model_subset = (predict_proba > PROBABILITY_THRESHOLD).astype(int)
+        all_predictions_on_model_subset = (predict_proba > optimal_threshold).astype(int)
         output_df = output_df.with_columns(
             tradeable=pl.Series(values=all_predictions_on_model_subset, dtype=pl.Int8)
         )

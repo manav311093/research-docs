@@ -1,16 +1,16 @@
-Training data shape: (3157, 27), Test data shape: (790, 27)
-Test Data Accuracy: 0.5962025316455696
+Optimal Probability Threshold based on Precision-Recall Curve: 0.5655216574668884
+Test Data Accuracy: 0.6470588235294118
 
 Model Evaluation on Test Set:
               precision    recall  f1-score   support
 
-           0       0.65      0.74      0.70       490
-           1       0.46      0.35      0.40       300
+           0       0.65      0.92      0.76       442
+           1       0.61      0.21      0.31       272
 
-    accuracy                           0.60       790
-   macro avg       0.56      0.55      0.55       790
-weighted avg       0.58      0.60      0.58       790
+    accuracy                           0.65       714
+   macro avg       0.63      0.56      0.54       714
+weighted avg       0.64      0.65      0.59       714
 
 Confusion Matrix (Test Set):
-[[106 194]
- [125 365]]
+[[406  36]
+ [216  56]]
