@@ -1,63 +1,62 @@
-Training data shape: (1608, 43), Test data shape: (402, 43)
+Training data shape: (2611, 43), Test data shape: (653, 43)
 
 Feature Importances:
-obi_dir_rle_3_5: 0.036932386457920074
-minutes_since_open: 0.03169286623597145
-uptrend_15: 0.02974916622042656
-bearish_candle_count_15: 0.02852821908891201
-obi_dir_rle_3_15: 0.028191708028316498
-obi_diff_315: 0.027639338746666908
-upper_wick_ratio: 0.027014130726456642
-bearish_candle_count_5: 0.02700098790228367
-obv: 0.02695513516664505
-obi_diff_35_abs: 0.026793494820594788
-d_ret_std_10: 0.02671409398317337
-minutes_since_midnight: 0.026673005893826485
-lower_wick_ratio: 0.02581496350467205
-obi_diff_35_slope: 0.025613564997911453
-obi_acceleration_3_15: 0.025512346997857094
-candle_body_ratio: 0.025444071739912033
-volatility_std_over_15m: 0.025001082569360733
-volume_surge: 0.025000890716910362
-d_ret_std_5: 0.02456439845263958
-rsi_distance_from_50: 0.024443725124001503
-vwap_distance: 0.024185534566640854
-obi_acceleration_3_5: 0.02412455715239048
-minutes_until_close: 0.02410457655787468
-bb_position: 0.023972542956471443
-volatility_mean_over_15m: 0.023972051218152046
-volatility_percentile: 0.02338053286075592
-obi_diff_315_slope: 0.023285575211048126
-d_gap_abs_mean_10: 0.023271342739462852
-volatility_ratio: 0.023212486878037453
-macd_minus_signal: 0.02306995540857315
-volatility_std_over_3m: 0.022954339161515236
-atr_percentile: 0.022952891886234283
-volatility_mean_over_3m: 0.022797970101237297
-d_vol_regime: 0.022532301023602486
-bullish_candle_count_15: 0.0223923958837986
-d_gap_abs_mean_5: 0.021998342126607895
-obi_diff_35: 0.02199041284620762
-obi_diff_315_abs: 0.021391693502664566
-volatility_expanding: 0.02059916779398918
-bullish_candle_count_5: 0.01853174902498722
-trade_signal: 0.0
+trade_signal: 0.03596607223153114
+obi_diff_35: 0.028818249702453613
+d_ret_std_10: 0.028585582971572876
+volatility_expanding: 0.027895908802747726
+rsi_distance_from_50: 0.027242077514529228
+obi_diff_35_slope: 0.02673524059355259
+bullish_candle_count_5: 0.026248959824442863
+d_gap_abs_mean_10: 0.026213446632027626
+obi_diff_315_slope: 0.02611769363284111
+obi_diff_315: 0.026016149669885635
+minutes_since_midnight: 0.025714537128806114
+obv: 0.025415046140551567
+volume_surge: 0.025365594774484634
+obi_diff_35_abs: 0.025068312883377075
+d_gap_abs_mean_5: 0.024926744401454926
+bb_position: 0.024602796882390976
+d_ret_std_5: 0.02460123598575592
+macd_minus_signal: 0.024566667154431343
+bullish_candle_count_15: 0.024429092183709145
+candle_body_ratio: 0.024169079959392548
+atr_percentile: 0.02397065982222557
+obi_dir_rle_3_15: 0.023917967453598976
+obi_acceleration_3_15: 0.02367132157087326
+volatility_std_over_15m: 0.023635447025299072
+upper_wick_ratio: 0.023489348590373993
+obi_acceleration_3_5: 0.023480186238884926
+volatility_std_over_3m: 0.023439187556505203
+minutes_since_open: 0.023367322981357574
+volatility_mean_over_15m: 0.023329634219408035
+vwap_distance: 0.023270484060049057
+lower_wick_ratio: 0.02280087023973465
+bearish_candle_count_5: 0.022756338119506836
+uptrend_15: 0.022409113124012947
+obi_diff_315_abs: 0.02225799858570099
+obi_dir_rle_3_5: 0.022252187132835388
+volatility_ratio: 0.022250600159168243
+volatility_mean_over_3m: 0.022156331688165665
+minutes_until_close: 0.02160433493554592
+volatility_percentile: 0.021419601514935493
+bearish_candle_count_15: 0.018971001729369164
+d_vol_regime: 0.01685158908367157
 uptrend_5: 0.0
 session_segment: 0.0
-Optimal Probability Threshold based on Precision-Recall Curve: 0.6877074837684631
-Test Data Accuracy: 0.6343283582089553
+Optimal Probability Threshold based on Precision-Recall Curve: 0.6196446418762207
+Test Data Accuracy: 0.655436447166922
 
 Model Evaluation on Test Set:
               precision    recall  f1-score   support
 
-           0       0.63      0.98      0.76       243
-           1       0.80      0.10      0.18       159
+           0       0.66      0.97      0.78       417
+           1       0.66      0.10      0.17       236
 
-    accuracy                           0.63       402
-   macro avg       0.71      0.54      0.47       402
-weighted avg       0.69      0.63      0.53       402
+    accuracy                           0.66       653
+   macro avg       0.66      0.53      0.48       653
+weighted avg       0.66      0.66      0.56       653
 
 Confusion Matrix (Test Set):
-[[239   4]
- [143  16]]
-
+[[405  12]
+ [213  23]]
