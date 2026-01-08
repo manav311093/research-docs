@@ -9,7 +9,7 @@ import datetime
 import sys
 import matplotlib.pyplot as plt
 import pandas as pd
-import math
+import random
 import os
 
 from sklearn.model_selection import train_test_split # For general splitting, but we'll do chronological
@@ -52,15 +52,18 @@ TRAIN_DAYS = [
     "2025-10-23", "2025-10-24", "2025-10-27", "2025-10-28", "2025-10-29", "2025-10-30", "2025-12-01", "2025-12-02",
     "2025-12-03", "2025-12-04", "2025-12-05", "2025-12-08", "2025-12-09", "2025-12-10", "2025-12-11", "2025-12-12",
     "2025-12-15", "2025-12-16", "2025-12-17", "2025-12-18", "2025-12-19", "2025-12-23", "2025-12-24", 
+    "2025-12-29", "2025-12-30", "2025-12-31",
+    '2026-01-01', '2026-01-02', '2026-01-05', '2026-01-06', '2026-01-07'
     
 ]
-TEST_DAYS = [
+
+PNL_DAYS = [
     "2025-12-15", "2025-12-16", "2025-12-17", "2025-12-18", "2025-12-19", "2025-12-23", "2025-12-24", 
     "2025-12-29", "2025-12-30", "2025-12-31",
-    '2026-01-01', '2026-01-02', '2026-01-05'
+    '2026-01-01', '2026-01-02', '2026-01-05', '2026-01-06', '2026-01-07'
 ]
 TRAIN_MODEL = True
-SHOW_PLOT = not True
+SHOW_PLOT =  not True
 SHOW_HISTORY = not True
 
 PROBABILITY_THRESHOLD = 0.55
@@ -420,7 +423,9 @@ def preprocess_data(
         ),
         obi=(pl.col("buy_quantity").cast(pl.Float64).mean() /
               (pl.col("sell_quantity").cast(pl.Float64).mean() + 1e-9) # epsilon to avoid div by zero
-        ).fill_null(0)
+        ).fill_null(0),
+        obi_max=((pl.col("buy_quantity").cast(pl.Float64) / (pl.col("sell_quantity").cast(pl.Float64) + 1e-9))).max(),
+        obi_min=((pl.col("buy_quantity").cast(pl.Float64) / (pl.col("sell_quantity").cast(pl.Float64) + 1e-9))).min()
     )
 
     candles_df = candles_df.with_columns(
@@ -449,9 +454,17 @@ def preprocess_data(
         obi_ma_3=pl.col("obi").ewm_mean(span=3, adjust=False, min_samples=1),
         obi_ma_5=pl.col("obi").ewm_mean(span=5, adjust=False, min_samples=1),
         obi_ma_15=pl.col("obi").ewm_mean(span=15, adjust=False, min_samples=1),
-
-
+        obi_volatility=(pl.col('obi_max') - pl.col('obi_min')),
+        obi_volatility_3=(pl.col('obi_max') - pl.col('obi_min')).ewm_std(span=3, min_samples=1),
+        obi_volatility_5=(pl.col('obi_max') - pl.col('obi_min')).ewm_std(span=5, min_samples=1),
+        obi_volatility_15=(pl.col('obi_max') - pl.col('obi_min')).ewm_std(span=15, min_samples=1),
     ).rename({"_lower_boundary": "timestamp_1m_start"}) # Use lower boundary as the key for the minute
+
+    candles_df = candles_df.with_columns(
+        obi_volatility_ratio=(pl.col("obi_volatility") / (pl.col("obi_volatility_3") + 1e-9)),
+        obi_volatility_ratio_3_5=(pl.col("obi_volatility_3") / (pl.col("obi_volatility_5") + 1e-9)),
+        obi_volatility_ratio_3_15=(pl.col("obi_volatility_3") / (pl.col("obi_volatility_15") + 1e-9))
+    )
 
     # ADD INDICATORS now refer, claude repo
     # rsi, macd, bollinger bands, atr, adx, stochastic oscillator, vwap, obv.
@@ -538,6 +551,11 @@ def preprocess_data(
         obi_macd_interaction_35=pl.col("obi_diff_35") * pl.col("macd_minus_signal"),
         obi_bb_interaction_35=pl.col("obi_diff_35") * pl.col("bb_position"),
     )
+    candles_df = candles_df.with_columns(
+        obi_volume_strength=pl.col("obi_diff_315_abs") * pl.col("volume_surge").clip(1.0, 3.0),
+        obi_volatility_strength=pl.col("obi_diff_315") / (pl.col("volatility_std_over_3m") + 1e-9).clip(-10.0, 10.0),
+        obi_time_decay=(pl.col("obi_diff_315_abs") * (pl.col("minutes_until_close") / 360)).clip(0.0, 1.0)
+    )
 
     return candles_df
 
@@ -547,28 +565,18 @@ def generate_signals(sdf: pl.DataFrame, config_dict: dict) -> pl.DataFrame:
 
     obi_long_entry = (
         ((df['obi_ma_3'] - df['obi_ma_15']) > 0) &
-        ((df['obi_ma_3'].shift(1) - df['obi_ma_15'].shift(1)) < 0)
-        #& (df['sq_ma_3_acc'] < OP_SIDE_ACC_MAX_SLOPE) 
-        #& (df['bq_ma_3_velo'] > 0)
-        # & (df['rsi'] < RSI_UP)
-        # & (df['smooth_price'] > df['sma_3'])
-        # & (df['volume_ma_3'] > df['volume_ma_3'].shift(60*3))
-        # & (df['volatility_1m_interval_over_15m'] >= df['last_price'] * VOL_LOW)
-        # & ((df['volatility_1m_interval_over_15m'] < df['last_price'] * VOL_UP) | (df['volatility_mean_1m_interval_over_3m'] < df['volatility_mean']))
-        #& (df['volatility_mean_1m_interval_over_3m'] < df['volatility_mean'])
+        ((df['obi_ma_3'].shift(1) - df['obi_ma_15'].shift(1)) < 0) &
+        (df["volatility_percentile"] > 0.15) &
+        (df["volatility_percentile"] < 0.85)
+        
     )
 
     obi_short_entry = (
         ((df['obi_ma_3'] - df['obi_ma_15']) < 0) &
-        ((df['obi_ma_3'].shift(1) - df['obi_ma_15'].shift(1)) > 0) 
-        # & (df['bq_ma_3_acc'] < OP_SIDE_ACC_MAX_SLOPE) 
-        #& (df['sq_ma_3_velo'] > 0)
-        # & (df['rsi'] > RSI_LOW)
-        # & (df['smooth_price'] < df['sma_3']) 
-        # & (df['volume_ma_3'] > df['volume_ma_3'].shift(60*3))
-        # & (df['volatility_1m_interval_over_15m'] >= df['last_price'] * VOL_LOW)
-        # & ((df['volatility_1m_interval_over_15m'] < df['last_price'] * VOL_UP) | (df['volatility_mean_1m_interval_over_3m'] < df['volatility_mean']))
-        #& (df['volatility_mean_1m_interval_over_3m'] < df['volatility_mean'])
+        ((df['obi_ma_3'].shift(1) - df['obi_ma_15'].shift(1)) > 0) &
+        (df["volatility_percentile"] > 0.15) &
+        (df["volatility_percentile"] < 0.85)
+        
     )
 
     long_entry_trigger = obi_long_entry.fill_null(False)
@@ -670,38 +678,6 @@ def generate_good_trade_label(df: pl.DataFrame,
     ).map_groups(apply_labeling_to_group)
     
     return df_with_labels
-
-def balance_df(df, label_col: str="tradeable"):
-    print("Balancing label rows")
-    # Count occurrences per label
-    label_counts = df.group_by(label_col).len().sort("len", descending=True)
-    print(f'Label count: {label_counts}')
-
-    # Determine max count to balance to
-    max_count = label_counts["len"][0]
-
-    # Prepare list to hold balanced chunks
-    balanced_chunks = []
-
-    # For each label, duplicate rows as needed
-    for label_value in df[label_col].unique().to_list():
-        subset = df.filter(pl.col(label_col) == label_value)
-        current_count = subset.height
-        if current_count < max_count:
-            # Calculate how many more rows are needed
-            needed = max_count - current_count
-            # Repeat the subset rows as needed (with random sampling if needed)
-            additional_rows = subset.sample(n=needed, with_replacement=True)
-            balanced_subset = pl.concat([subset, additional_rows])
-        else:
-            balanced_subset = subset
-        balanced_chunks.append(balanced_subset)
-
-    # Combine all into one balanced DataFrame
-    balanced_df = pl.concat(balanced_chunks).with_row_index(name="new_id").sample(fraction=1.0,
-                                                                                  shuffle=True,
-                                                                                  with_replacement=False)
-    return balanced_df
 
 class BrokerageCalculator(object):
     # self.total_tax holds total brokerage + tax incurred on the squared off trade
@@ -954,7 +930,7 @@ if __name__ == "__main__":
                 all_trade_df = output_df
             else:
                 all_trade_df = pl.concat([all_trade_df, output_df])
-
+        
         feature_columns = ['volatility_std_over_15m', 'volatility_std_over_3m', 'volatility_mean_over_15m',
                            'volatility_mean_over_3m',
                             'volatility_ratio',
@@ -971,9 +947,17 @@ if __name__ == "__main__":
                             'atr_percentile', 'bb_position',
                             'minutes_since_midnight', 'minutes_since_open', 'minutes_until_close',
                             'session_segment', 'obi_diff_315', 'obi_diff_315_abs', 'obi_diff_315_slope',
-                            'obi_diff_35', 'obi_diff_35_abs', 'obi_diff_35_slope'
+                            'obi_diff_35', 'obi_diff_35_abs', 'obi_diff_35_slope',
+                            
                            ]
         target_column_name = ["tradeable"]
+        # filter for quality before training
+        all_trade_df = all_trade_df.filter(
+            #(pl.col("obi_diff_315_abs") > 0.02) &
+            (pl.col("volatility_percentile") > 0.15) &
+            (pl.col("volatility_percentile") < 0.85) 
+            #(pl.col("volume_surge") > 0.8)
+        )
 
         # traing model & eval accuracy
         train_split_ratio = 0.8
@@ -983,7 +967,6 @@ if __name__ == "__main__":
         #import ipdb; ipdb.set_trace()
 
         # replace with scale_pos_weight in xgboost
-        #all_trade_train_df = balance_df(all_trade_train_df, label_col="tradeable")
         pos_count = all_trade_train_df.filter(pl.col("tradeable") == 1).height
         neg_count = all_trade_train_df.filter(pl.col("tradeable") == 0).height
         spw = 1.0
@@ -1006,7 +989,7 @@ if __name__ == "__main__":
             all_trade_df.with_columns(dt_predicted_signal=pl.lit(None, dtype=pl.Int8))
         else:
             model = XGBClassifier(**{'learning_rate': 0.03,
-                                     'max_depth': 4,
+                                     'max_depth':4,
                                      'n_estimators': 5000,
                                      'subsample': 0.7,
                                      'colsample_bytree': 0.7,
@@ -1016,14 +999,16 @@ if __name__ == "__main__":
                                      'gamma': 3.0,
                                      'reg_alpha':0.5,
                                      'reg_lambda': 7.0,
-                                     'scale_pos_weight': spw
+                                     'scale_pos_weight': spw*1.1,
+                                     'early_stopping_rounds': 100,
+                                     'tree_method': 'hist',
                                      })
             # try:
             #     model.load_model("rel_xgbmodel.json")
             # except:
             #     pass
             model.fit(X_train_pd, y_train_pd, eval_set=[(X_test_pd, y_test_pd)],
-                       early_stopping_rounds=100, verbose=False)
+                      verbose=False)
             model.save_model('rel_xgbmodel.json')
             feature_importances = model.feature_importances_
             feature_importance_dict = dict(zip(feature_columns, feature_importances))
@@ -1034,7 +1019,7 @@ if __name__ == "__main__":
             # Predict and evaluate the model
             y_pred_proba = model.predict_proba(X_test_pd)[:, 1]
             precisions, recalls, thresholds = precision_recall_curve(y_test_pd, y_pred_proba)
-            min_recall = 0.2
+            min_recall = 0.1
             valid = recalls[:-1] >= min_recall
             best_idx = np.argmax(precisions[:-1][valid])
             optimal_threshold = thresholds[valid][best_idx]
@@ -1061,7 +1046,7 @@ if __name__ == "__main__":
     all_day_pnl = 0.0
     model = XGBClassifier()
     model.load_model("rel_xgbmodel.json") #load('decision_tree_model.joblib')
-    for day in TEST_DAYS:
+    for day in PNL_DAYS:
         ticks_df = ticks_df_map.get(day, pl.read_parquet(os.path.join(MARKET_DATA_HOME_PATH, f"tick/{config['instrument_token']}/{day}.parquet")))
         ticks_df_map[day] = ticks_df
         n_ticks = ticks_df.clone()
@@ -1092,7 +1077,8 @@ if __name__ == "__main__":
                             'atr_percentile', 'bb_position',
                             'minutes_since_midnight', 'minutes_since_open', 'minutes_until_close',
                             'session_segment', 'obi_diff_315', 'obi_diff_315_abs', 'obi_diff_315_slope',
-                            'obi_diff_35', 'obi_diff_35_abs', 'obi_diff_35_slope'
+                            'obi_diff_35', 'obi_diff_35_abs', 'obi_diff_35_slope',
+                            
                            ]
         predict_proba = model.predict_proba(output_df.select(feature_columns).to_pandas())[:, 1]
         all_predictions_on_model_subset = (predict_proba > optimal_threshold).astype(int)
@@ -1143,7 +1129,7 @@ if __name__ == "__main__":
             #           & (df['bq_ma_3_acc']<-3000)  & (df['volume_ma_1'] > df['volume_ma_3'])]
             # axs[0].scatter(supp.index, supp['last_price'], color='yellow', marker='o', s=100, zorder=3, alpha=0.7)
             # Plot Buy Entry Signals (Green Dots)
-            buy_signals = df[df['buy_signal'] & (df['tradeable'] == 1)]
+            buy_signals = df[(df['buy_signal'] == True) & (df['tradeable'] == 1)]
             axs[0].scatter(buy_signals.index, buy_signals['price_close_real'], color='green', marker='o', s=100, zorder=3, alpha=0.7)
             # buy_signals = df[df['buy_signal1']]
             # axs[0].scatter(buy_signals.index, buy_signals['last_price'], color='green', marker='$1$', s=100, zorder=3, alpha=0.7)
@@ -1153,7 +1139,7 @@ if __name__ == "__main__":
             # axs[0].scatter(buy_signals.index, buy_signals['last_price'],  color='green', marker='$5 $', s=100, zorder=3, alpha=0.7)
             
             # Plot Sell Entry Signals (Red Dots)
-            sell_signals = df[df['sell_signal'] & (df['tradeable'] == 1)]
+            sell_signals = df[(df['sell_signal'] == True) & (df['tradeable'] == 1)]
             axs[0].scatter(sell_signals.index, sell_signals['price_close_real'],  color='red', marker='o', s=100, zorder=3, alpha=0.7)
             # sell_signals = df[df['sell_signal1']]
             # axs[0].scatter(sell_signals.index, sell_signals['last_price'],  color='red', marker='$1$', s=100, zorder=3, alpha=0.7)

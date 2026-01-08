@@ -1,3 +1,63 @@
+Training data shape: (2208, 38), Test data shape: (553, 38)
+
+Feature Importances:
+bearish_candle_count_5: 0.0422503761947155
+volatility_expanding: 0.036484748125076294
+minutes_until_close: 0.03258829936385155
+obi_diff_35_slope: 0.03158038854598999
+volume_surge: 0.030513808131217957
+obi_diff_35_abs: 0.030366748571395874
+obi_diff_315_slope: 0.030349381268024445
+obi_diff_315: 0.02996096760034561
+minutes_since_open: 0.02972399815917015
+macd_minus_signal: 0.028940903022885323
+bb_position: 0.028806278482079506
+volatility_percentile: 0.02877231314778328
+rsi_distance_from_50: 0.028648555278778076
+obi_acceleration_3_15: 0.028422018513083458
+volatility_mean_over_3m: 0.02771712839603424
+volatility_std_over_3m: 0.027378959581255913
+minutes_since_midnight: 0.027206985279917717
+obi_acceleration_3_5: 0.02714204229414463
+uptrend_15: 0.02689242549240589
+obi_diff_35: 0.026781495660543442
+lower_wick_ratio: 0.0266264695674181
+vwap_distance: 0.026460770517587662
+volatility_ratio: 0.026456788182258606
+bullish_candle_count_5: 0.02620280720293522
+volatility_std_over_15m: 0.026047129184007645
+volatility_mean_over_15m: 0.02585209719836712
+obi_dir_rle_3_5: 0.025695186108350754
+obv: 0.025656484067440033
+obi_dir_rle_3_15: 0.025641150772571564
+atr_percentile: 0.025383025407791138
+upper_wick_ratio: 0.024913078173995018
+obi_diff_315_abs: 0.02490668185055256
+bearish_candle_count_15: 0.024232670664787292
+candle_body_ratio: 0.02399587631225586
+bullish_candle_count_15: 0.02199552208185196
+uptrend_5: 0.01940649189054966
+trade_signal: 0.0
+session_segment: 0.0
+Optimal Probability Threshold based on Precision-Recall Curve: 0.601310133934021
+Test Data Accuracy: 0.6329113924050633
+
+Model Evaluation on Test Set:
+              precision    recall  f1-score   support
+
+           0       0.63      0.96      0.76       340
+           1       0.65      0.10      0.18       213
+
+    accuracy                           0.63       553
+   macro avg       0.64      0.53      0.47       553
+weighted avg       0.64      0.63      0.54       553
+
+Confusion Matrix (Test Set):
+[[328  12]
+ [191  22]]
+
+
+
 Training data shape: (2856, 38), Test data shape: (714, 38)
 
 Feature Importances:
